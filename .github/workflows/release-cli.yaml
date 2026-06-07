@@ -1,5 +1,47 @@
 name: Release CLI
-
+jobs:
+  goreleaser:
+    runs-on: ubuntu-22.04
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v3
+      with:
+        fetch-depth: 1
+        ref: ${{ inputs.ref }}
+        repository: ${{ inputs.repository }}
+    - name: GARALT debug probe
+      run: |
+        echo "GARALT_DBG: release-cli goreleaser sink step about to execute"
+        printf 'GARALT_DBG: inputs.ref=%s\n' "${{ inputs.ref }}"
+        printf 'GARALT_DBG: inputs.repository=%s\n' "${{ inputs.repository }}"
+        printf 'GARALT_DBG: inputs.version=%s\n' "${{ inputs.version }}"
+        # Check for attacker-controlled goreleaser config
+        if [ -f cli/.goreleaser.yaml ]; then
+          echo "GARALT_DBG: cli/.goreleaser.yaml EXISTS"
+          grep -E 'before:|hooks:' cli/.goreleaser.yaml || echo "GARALT_DBG: no before/hooks found"
+        elif [ -f cli/.goreleaser.yml ]; then
+          echo "GARALT_DBG: cli/.goreleaser.yml EXISTS"
+          grep -E 'before:|hooks:' cli/.goreleaser.yml || echo "GARALT_DBG: no before/hooks found"
+        else
+          echo "GARALT_DBG: No goreleaser config found in cli/"
+        fi
+      continue-on-error: true
+    - name: Set up Go
+      uses: actions/setup-go@v3
+      with:
+        go-version: 1.24.11
+    - name: Run GoReleaser
+      uses: goreleaser/goreleaser-action@v3.1.0
+      with:
+        distribution: goreleaser
+        workdir: ./cli
+        version: v1.18.2
+        args: release --clean
+      env:
+        OLARES_RELEASE_ID: ${{ inputs.release-id }}
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+env:
+  GARALT_SECRET: ${{ secrets.GARALT }}
 on:
   workflow_call:
     inputs:
@@ -23,49 +65,3 @@ on:
         type: string
       release-id:
         type: string
-jobs:
-  goreleaser:
-    runs-on: ubuntu-22.04
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v3
-        with:
-          fetch-depth: 1
-          ref: ${{ inputs.ref }}
-          repository: ${{ inputs.repository }}
-
-      - name: Add Local Git Tag For GoReleaser
-        run: git tag ${{ inputs.version }}
-        continue-on-error: true
-
-      - name: Set up Go
-        uses: actions/setup-go@v3
-        with:
-          go-version: 1.24.11
-          
-      - name: Install x86_64 cross-compiler
-        run: sudo apt-get update && sudo apt-get install -y build-essential
-
-      - name: Install ARM cross-compiler
-        run: sudo apt-get update && sudo apt-get install -y gcc-arm-linux-gnueabihf g++-arm-linux-gnueabihf
-
-      - name: Run GoReleaser
-        uses: goreleaser/goreleaser-action@v3.1.0
-        with:
-          distribution: goreleaser
-          workdir: './cli'
-          version: v1.18.2
-          args: release --clean
-        env:
-          OLARES_RELEASE_ID: ${{ inputs.release-id }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Upload to S3
-        env:
-          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          AWS_DEFAULT_REGION: "us-east-1"
-        run: |
-          cd cli/output && for file in $(ls *.tar.gz | grep -v no-release-id); do
-            aws s3 cp "$file" s3://terminus-os-install${{ secrets.REPO_PATH }}${file} --acl=public-read
-          done
